@@ -2,8 +2,20 @@
 
 local npc_storage = minetest.get_mod_storage()
 local npc_list = {}
+local npc_counter = 0
+local player_editing = {}
 
+-- =========================
+-- ID generator
+-- =========================
+local function generate_id()
+    npc_counter = npc_counter + 1
+    return "npc" .. npc_counter
+end
+
+-- =========================
 -- Default commands reference
+-- =========================
 local command_help = {
     forward = "Move forward for <duration> seconds. Usage: forward <speed> <duration>",
     turn_left = "Turn left (90°). Usage: turn_left",
@@ -41,6 +53,8 @@ minetest.register_entity("npc_mod:npc", {
                 if data.texture then
                     self.object:set_properties({textures = {data.texture}})
                 end
+                -- Re-add to npc_list after restart
+                npc_list[self.npc_id] = self
             end
         end
     end,
@@ -86,7 +100,7 @@ minetest.register_entity("npc_mod:npc", {
 })
 
 -- =========================
--- Commands
+-- Spawn command
 -- =========================
 minetest.register_chatcommand("spawn_npc", {
     description = "Spawn a programmable NPC",
@@ -96,26 +110,45 @@ minetest.register_chatcommand("spawn_npc", {
         local pos = vector.add(player:get_pos(), {x=0, y=1, z=0})
         local obj = minetest.add_entity(pos, "npc_mod:npc")
         local lua = obj:get_luaentity()
-        local id = "npc_" .. os.time() .. "_" .. math.random(1000)
+        local id = generate_id()
         lua.npc_id = id
         npc_list[id] = lua
         minetest.chat_send_player(name, "Spawned NPC with ID: " .. id)
     end,
 })
 
+-- =========================
+-- Helper: safe string split
+-- =========================
+local function split_words(line)
+    local t = {}
+    for word in line:gmatch("%S+") do
+        table.insert(t, word)
+    end
+    return t
+end
+
+-- =========================
 -- Editor formspec
+-- =========================
 local function get_editor_formspec(id, program_text, texture)
     return table.concat({
         "formspec_version[4]",
-        "size[10,8]",
+        "size[10,10]",
         "label[0.5,0.2;Editing NPC: ", id, "]",
         "textarea[0.5,0.7;9,4;program;Program (line by line):;", minetest.formspec_escape(program_text or ""), "]",
         "field[0.5,5.2;5,1;texture;Texture filename:;", minetest.formspec_escape(texture or "Steve_(classic_texture)_JE6.png"), "]",
         "button[0.5,6;3,1;save;Save Program]",
         "button[4,6;3,1;help;Show Help]",
+        "label[0.5,7;Move NPC 1 block:]",
+        "button[0.5,7.5;2,1;move_forward;Forward]",
+        "button[2.5,7.5;2,1;move_back;Back]",
+        "button[5,7.5;2,1;move_left;Left]",
+        "button[7.5,7.5;2,1;move_right;Right]",
     })
 end
 
+-- Help formspec
 local function get_help_formspec()
     local text = ""
     for cmd, desc in pairs(command_help) do
@@ -126,13 +159,16 @@ local function get_help_formspec()
         "]button[3,7.5;3,1;back;Back]"
 end
 
--- Open editor
+-- =========================
+-- Edit command
+-- =========================
 minetest.register_chatcommand("npc_edit", {
     params = "<id>",
     description = "Edit NPC program",
     func = function(name, param)
         if npc_list[param] then
             local npc = npc_list[param]
+            player_editing[name] = param
             local program_text = ""
             for _, step in ipairs(npc.program) do
                 if step.action == "forward" then
@@ -153,21 +189,15 @@ minetest.register_chatcommand("npc_edit", {
     end,
 })
 
--- Safe string split
-local function split_words(line)
-    local t = {}
-    for word in line:gmatch("%S+") do
-        table.insert(t, word)
-    end
-    return t
-end
-
--- Handle editor buttons
+-- =========================
+-- Handle formspec buttons
+-- =========================
 minetest.register_on_player_receive_fields(function(player, formname, fields)
     local pname = player:get_player_name()
     local id = formname:match("npc_mod:editor_(.+)")
     if id and npc_list[id] then
         local npc = npc_list[id]
+
         if fields.save and fields.program then
             local program = {}
             for line in fields.program:gmatch("[^\r\n]+") do
@@ -195,8 +225,41 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
             minetest.show_formspec(pname, "npc_mod:help", get_help_formspec())
 
         elseif fields.back then
-            minetest.show_formspec(pname, "npc_mod:editor_"..id,
-                get_editor_formspec(id, fields.program or "", fields.texture or "Steve_(classic_texture)_JE6.png"))
+            local edit_id = player_editing[pname]
+            if edit_id and npc_list[edit_id] then
+                local npc = npc_list[edit_id]
+                local program_text = ""
+                for _, step in ipairs(npc.program) do
+                    if step.action == "forward" then
+                        program_text = program_text .. "forward " .. (step.speed or 2) .. " " .. (step.duration or 2) .. "\n"
+                    elseif step.action == "stop" then
+                        program_text = program_text .. "stop " .. (step.duration or 2) .. "\n"
+                    elseif step.action == "turn_left" or step.action == "turn_right" then
+                        program_text = program_text .. step.action .. "\n"
+                    elseif step.action == "texture" then
+                        program_text = program_text .. "texture " .. (step.name or "") .. "\n"
+                    end
+                end
+                minetest.show_formspec(pname, "npc_mod:editor_"..edit_id,
+                    get_editor_formspec(edit_id, program_text, npc.object:get_properties().textures[1]))
+            end
+
+        elseif fields.move_forward or fields.move_back or fields.move_left or fields.move_right then
+            local dir = npc.object:get_yaw()
+            local offset = {x=0, y=0, z=0}
+
+            if fields.move_forward then
+                offset = {x=math.cos(dir), y=0, z=math.sin(dir)}
+            elseif fields.move_back then
+                offset = {x=-math.cos(dir), y=0, z=-math.sin(dir)}
+            elseif fields.move_left then
+                offset = {x=math.cos(dir + math.pi/2), y=0, z=math.sin(dir + math.pi/2)}
+            elseif fields.move_right then
+                offset = {x=math.cos(dir - math.pi/2), y=0, z=math.sin(dir - math.pi/2)}
+            end
+
+            local pos = npc.object:get_pos()
+            npc.object:set_pos(vector.add(pos, offset))
         end
     end
 end)
