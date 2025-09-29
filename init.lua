@@ -61,7 +61,6 @@ minetest.register_entity("npc_mod:npc", {
         local step = self.program[self.program_index]
         if not step then return end
 
-        -- Execute step when timer expires
         if self.timer >= (step.duration or 2) then
             if step.action == "forward" then
                 local dir = self.object:get_yaw()
@@ -73,11 +72,10 @@ minetest.register_entity("npc_mod:npc", {
                 self.object:set_yaw(self.object:get_yaw() - math.rad(90))
             elseif step.action == "stop" then
                 self.object:set_velocity({x=0, y=0, z=0})
-            elseif step.action == "texture" then
+            elseif step.action == "texture" and step.name then
                 self.object:set_properties({textures = {step.name}})
             end
 
-            -- Advance program
             self.timer = 0
             self.program_index = self.program_index + 1
             if self.program_index > #self.program then
@@ -111,8 +109,8 @@ local function get_editor_formspec(id, program_text, texture)
         "formspec_version[4]",
         "size[10,8]",
         "label[0.5,0.2;Editing NPC: ", id, "]",
-        "textarea[0.5,0.7;9,4;program;Program (line by line):;", program_text or ""] ,
-        "field[0.5,5.2;5,1;texture;Texture filename:;" , texture or "character.png" , "]",
+        "textarea[0.5,0.7;9,4;program;Program (line by line):;", minetest.formspec_escape(program_text or ""), "]",
+        "field[0.5,5.2;5,1;texture;Texture filename:;", minetest.formspec_escape(texture or "Steve_(classic_texture)_JE6.png"), "]",
         "button[0.5,6;3,1;save;Save Program]",
         "button[4,6;3,1;help;Show Help]",
     })
@@ -123,7 +121,9 @@ local function get_help_formspec()
     for cmd, desc in pairs(command_help) do
         text = text .. cmd .. " - " .. desc .. "\n"
     end
-    return "formspec_version[4]size[10,8]textarea[0.5,0.5;9,7;help;Available Commands:;"..minetest.formspec_escape(text).."]button[3,7.5;3,1;back;Back]"
+    return "formspec_version[4]size[10,8]textarea[0.5,0.5;9,7;help;Available Commands:;"..
+        minetest.formspec_escape(text)..
+        "]button[3,7.5;3,1;back;Back]"
 end
 
 -- Open editor
@@ -145,12 +145,22 @@ minetest.register_chatcommand("npc_edit", {
                     program_text = program_text .. "texture " .. (step.name or "") .. "\n"
                 end
             end
-            minetest.show_formspec(name, "npc_mod:editor_"..param, get_editor_formspec(param, program_text, npc.object:get_properties().textures[1]))
+            minetest.show_formspec(name, "npc_mod:editor_"..param,
+                get_editor_formspec(param, program_text, npc.object:get_properties().textures[1]))
         else
             return false, "No NPC with that ID."
         end
     end,
 })
+
+-- Safe string split
+local function split_words(line)
+    local t = {}
+    for word in line:gmatch("%S+") do
+        table.insert(t, word)
+    end
+    return t
+end
 
 -- Handle editor buttons
 minetest.register_on_player_receive_fields(function(player, formname, fields)
@@ -159,10 +169,9 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
     if id and npc_list[id] then
         local npc = npc_list[id]
         if fields.save and fields.program then
-            -- Parse program
             local program = {}
             for line in fields.program:gmatch("[^\r\n]+") do
-                local args = line:split(" ")
+                local args = split_words(line)
                 local cmd = args[1]
                 if cmd == "forward" then
                     table.insert(program, {action="forward", speed=tonumber(args[2]) or 2, duration=tonumber(args[3]) or 2})
@@ -181,10 +190,13 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
                 npc.object:set_properties({textures = {fields.texture}})
             end
             minetest.chat_send_player(pname, "Program saved for NPC "..id)
+
         elseif fields.help then
             minetest.show_formspec(pname, "npc_mod:help", get_help_formspec())
+
         elseif fields.back then
-            minetest.show_formspec(pname, "npc_mod:editor_"..id, get_editor_formspec(id, fields.program or "", fields.texture or "character.png"))
+            minetest.show_formspec(pname, "npc_mod:editor_"..id,
+                get_editor_formspec(id, fields.program or "", fields.texture or "Steve_(classic_texture)_JE6.png"))
         end
     end
 end)
