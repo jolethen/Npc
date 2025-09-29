@@ -23,7 +23,7 @@ minetest.register_entity("npc_mod:npc", {
         collisionbox = {-0.3, -1.0, -0.3, 0.3, 0.8, 0.3},
         visual = "mesh",
         mesh = "character.b3d",
-        textures = {"character.png"},
+        textures = {"texture/Steve_(classic_texture)_JE6.png"},
     },
 
     npc_id = nil,
