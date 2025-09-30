@@ -2,11 +2,11 @@
 
 local npc_storage = minetest.get_mod_storage()
 local npc_list = {}
-local npc_counter = 0
 local player_editing = {}
+local npc_counter = 0
 
 -- =========================
--- ID generator
+-- Simple ID generator
 -- =========================
 local function generate_id()
     npc_counter = npc_counter + 1
@@ -17,12 +17,32 @@ end
 -- Default commands reference
 -- =========================
 local command_help = {
-    forward = "Move forward for <duration> seconds. Usage: forward <speed> <duration>",
-    turn_left = "Turn left (90°). Usage: turn_left",
-    turn_right = "Turn right (90°). Usage: turn_right",
-    stop = "Stop moving. Usage: stop <duration>",
-    texture = "Change texture. Usage: texture <filename.png>"
+    forward      = "Move forward continuously. Usage: forward <speed> <duration>",
+    turn_left    = "Turn left (90°). Usage: turn_left",
+    turn_right   = "Turn right (90°). Usage: turn_right",
+    stop         = "Stop moving. Usage: stop <duration>",
+    texture      = "Change texture. Usage: texture <filename.png>",
+    move_forward = "Step exactly 1 block forward. Usage: move_forward",
+    move_back    = "Step exactly 1 block back. Usage: move_back",
+    move_left    = "Step exactly 1 block left. Usage: move_left",
+    move_right   = "Step exactly 1 block right. Usage: move_right",
 }
+
+-- =========================
+-- Helper: safe move check
+-- =========================
+local function try_move(obj, offset)
+    local pos = obj:get_pos()
+    local target = vector.round(vector.add(pos, offset))
+    local node = minetest.get_node_or_nil(target)
+    if node then
+        local def = minetest.registered_nodes[node.name]
+        if def and def.walkable then
+            return -- blocked
+        end
+    end
+    obj:set_pos(target)
+end
 
 -- =========================
 -- NPC entity
@@ -53,8 +73,6 @@ minetest.register_entity("npc_mod:npc", {
                 if data.texture then
                     self.object:set_properties({textures = {data.texture}})
                 end
-                -- Re-add to npc_list after restart
-                npc_list[self.npc_id] = self
             end
         end
     end,
@@ -80,14 +98,34 @@ minetest.register_entity("npc_mod:npc", {
                 local dir = self.object:get_yaw()
                 local vel = vector.new(math.cos(dir), 0, math.sin(dir))
                 self.object:set_velocity(vector.multiply(vel, step.speed or 2))
+
             elseif step.action == "turn_left" then
                 self.object:set_yaw(self.object:get_yaw() + math.rad(90))
+
             elseif step.action == "turn_right" then
                 self.object:set_yaw(self.object:get_yaw() - math.rad(90))
+
             elseif step.action == "stop" then
                 self.object:set_velocity({x=0, y=0, z=0})
-            elseif step.action == "texture" and step.name then
+
+            elseif step.action == "texture" then
                 self.object:set_properties({textures = {step.name}})
+
+            elseif step.action == "move_forward" then
+                local dir = self.object:get_yaw()
+                try_move(self.object, {x=math.cos(dir), y=0, z=math.sin(dir)})
+
+            elseif step.action == "move_back" then
+                local dir = self.object:get_yaw()
+                try_move(self.object, {x=-math.cos(dir), y=0, z=-math.sin(dir)})
+
+            elseif step.action == "move_left" then
+                local dir = self.object:get_yaw()
+                try_move(self.object, {x=math.cos(dir + math.pi/2), y=0, z=math.sin(dir + math.pi/2)})
+
+            elseif step.action == "move_right" then
+                local dir = self.object:get_yaw()
+                try_move(self.object, {x=math.cos(dir - math.pi/2), y=0, z=math.sin(dir - math.pi/2)})
             end
 
             self.timer = 0
@@ -100,7 +138,7 @@ minetest.register_entity("npc_mod:npc", {
 })
 
 -- =========================
--- Spawn command
+-- Commands
 -- =========================
 minetest.register_chatcommand("spawn_npc", {
     description = "Spawn a programmable NPC",
@@ -118,37 +156,20 @@ minetest.register_chatcommand("spawn_npc", {
 })
 
 -- =========================
--- Helper: safe string split
--- =========================
-local function split_words(line)
-    local t = {}
-    for word in line:gmatch("%S+") do
-        table.insert(t, word)
-    end
-    return t
-end
-
--- =========================
--- Editor formspec
+-- Editor formspecs
 -- =========================
 local function get_editor_formspec(id, program_text, texture)
     return table.concat({
         "formspec_version[4]",
-        "size[10,10]",
+        "size[10,8]",
         "label[0.5,0.2;Editing NPC: ", id, "]",
         "textarea[0.5,0.7;9,4;program;Program (line by line):;", minetest.formspec_escape(program_text or ""), "]",
-        "field[0.5,5.2;5,1;texture;Texture filename:;", minetest.formspec_escape(texture or "Steve_(classic_texture)_JE6.png"), "]",
+        "field[0.5,5.2;5,1;texture;Texture filename:;" , minetest.formspec_escape(texture or "Steve_(classic_texture)_JE6.png") , "]",
         "button[0.5,6;3,1;save;Save Program]",
         "button[4,6;3,1;help;Show Help]",
-        "label[0.5,7;Move NPC 1 block:]",
-        "button[0.5,7.5;2,1;move_forward;Forward]",
-        "button[2.5,7.5;2,1;move_back;Back]",
-        "button[5,7.5;2,1;move_left;Left]",
-        "button[7.5,7.5;2,1;move_right;Right]",
     })
 end
 
--- Help formspec
 local function get_help_formspec()
     local text = ""
     for cmd, desc in pairs(command_help) do
@@ -160,7 +181,7 @@ local function get_help_formspec()
 end
 
 -- =========================
--- Edit command
+-- Open editor
 -- =========================
 minetest.register_chatcommand("npc_edit", {
     params = "<id>",
@@ -168,19 +189,17 @@ minetest.register_chatcommand("npc_edit", {
     func = function(name, param)
         if npc_list[param] then
             local npc = npc_list[param]
-            player_editing[name] = param
             local program_text = ""
             for _, step in ipairs(npc.program) do
                 if step.action == "forward" then
                     program_text = program_text .. "forward " .. (step.speed or 2) .. " " .. (step.duration or 2) .. "\n"
                 elseif step.action == "stop" then
                     program_text = program_text .. "stop " .. (step.duration or 2) .. "\n"
-                elseif step.action == "turn_left" or step.action == "turn_right" then
+                else
                     program_text = program_text .. step.action .. "\n"
-                elseif step.action == "texture" then
-                    program_text = program_text .. "texture " .. (step.name or "") .. "\n"
                 end
             end
+            player_editing[name] = param
             minetest.show_formspec(name, "npc_mod:editor_"..param,
                 get_editor_formspec(param, program_text, npc.object:get_properties().textures[1]))
         else
@@ -190,18 +209,19 @@ minetest.register_chatcommand("npc_edit", {
 })
 
 -- =========================
--- Handle formspec buttons
+-- Handle editor forms
 -- =========================
 minetest.register_on_player_receive_fields(function(player, formname, fields)
     local pname = player:get_player_name()
     local id = formname:match("npc_mod:editor_(.+)")
+
     if id and npc_list[id] then
         local npc = npc_list[id]
 
         if fields.save and fields.program then
             local program = {}
             for line in fields.program:gmatch("[^\r\n]+") do
-                local args = split_words(line)
+                local args = line:split(" ")
                 local cmd = args[1]
                 if cmd == "forward" then
                     table.insert(program, {action="forward", speed=tonumber(args[2]) or 2, duration=tonumber(args[3]) or 2})
@@ -213,6 +233,14 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
                     table.insert(program, {action="stop", duration=tonumber(args[2]) or 2})
                 elseif cmd == "texture" then
                     table.insert(program, {action="texture", name=args[2]})
+                elseif cmd == "move_forward" then
+                    table.insert(program, {action="move_forward", duration=1})
+                elseif cmd == "move_back" then
+                    table.insert(program, {action="move_back", duration=1})
+                elseif cmd == "move_left" then
+                    table.insert(program, {action="move_left", duration=1})
+                elseif cmd == "move_right" then
+                    table.insert(program, {action="move_right", duration=1})
                 end
             end
             npc.program = program
@@ -230,36 +258,11 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
                 local npc = npc_list[edit_id]
                 local program_text = ""
                 for _, step in ipairs(npc.program) do
-                    if step.action == "forward" then
-                        program_text = program_text .. "forward " .. (step.speed or 2) .. " " .. (step.duration or 2) .. "\n"
-                    elseif step.action == "stop" then
-                        program_text = program_text .. "stop " .. (step.duration or 2) .. "\n"
-                    elseif step.action == "turn_left" or step.action == "turn_right" then
-                        program_text = program_text .. step.action .. "\n"
-                    elseif step.action == "texture" then
-                        program_text = program_text .. "texture " .. (step.name or "") .. "\n"
-                    end
+                    program_text = program_text .. step.action .. "\n"
                 end
                 minetest.show_formspec(pname, "npc_mod:editor_"..edit_id,
                     get_editor_formspec(edit_id, program_text, npc.object:get_properties().textures[1]))
             end
-
-        elseif fields.move_forward or fields.move_back or fields.move_left or fields.move_right then
-            local dir = npc.object:get_yaw()
-            local offset = {x=0, y=0, z=0}
-
-            if fields.move_forward then
-                offset = {x=math.cos(dir), y=0, z=math.sin(dir)}
-            elseif fields.move_back then
-                offset = {x=-math.cos(dir), y=0, z=-math.sin(dir)}
-            elseif fields.move_left then
-                offset = {x=math.cos(dir + math.pi/2), y=0, z=math.sin(dir + math.pi/2)}
-            elseif fields.move_right then
-                offset = {x=math.cos(dir - math.pi/2), y=0, z=math.sin(dir - math.pi/2)}
-            end
-
-            local pos = npc.object:get_pos()
-            npc.object:set_pos(vector.add(pos, offset))
         end
     end
 end)
