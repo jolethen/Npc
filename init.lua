@@ -14,7 +14,7 @@ local function generate_id()
 end
 
 -- =========================
--- Default commands reference
+-- Commands reference
 -- =========================
 local command_help = {
     forward      = "Move forward continuously. Usage: forward <speed> <duration>",
@@ -22,26 +22,24 @@ local command_help = {
     turn_right   = "Turn right (90°). Usage: turn_right",
     stop         = "Stop moving. Usage: stop <duration>",
     texture      = "Change texture. Usage: texture <filename.png>",
-    move_forward = "Step exactly 1 block forward. Usage: move_forward",
-    move_back    = "Step exactly 1 block back. Usage: move_back",
-    move_left    = "Step exactly 1 block left. Usage: move_left",
-    move_right   = "Step exactly 1 block right. Usage: move_right",
+    chat         = "Send a chat message. Usage: chat \"message\"",
+    move_forward = "Step forward one block slowly",
+    move_back    = "Step back one block slowly",
+    move_left    = "Step left one block slowly",
+    move_right   = "Step right one block slowly",
+    move_up      = "Step up one block slowly",
+    move_down    = "Step down one block slowly",
 }
 
 -- =========================
--- Helper: safe move check
+-- Helper: safe position check
 -- =========================
-local function try_move(obj, offset)
-    local pos = obj:get_pos()
-    local target = vector.round(vector.add(pos, offset))
-    local node = minetest.get_node_or_nil(target)
-    if node then
-        local def = minetest.registered_nodes[node.name]
-        if def and def.walkable then
-            return -- blocked
-        end
-    end
-    obj:set_pos(target)
+local function can_stand_at(pos)
+    local node = minetest.get_node_or_nil(pos)
+    if not node then return false end
+    local def = minetest.registered_nodes[node.name]
+    if def and def.walkable then return false end
+    return true
 end
 
 -- =========================
@@ -62,6 +60,19 @@ minetest.register_entity("npc_mod:npc", {
     program = {},
     program_index = 1,
     timer = 0,
+    moving = nil, -- active smooth movement
+    anim = "stand",
+
+    -- Animation helper
+    set_anim = function(self, anim)
+        if self.anim == anim then return end
+        self.anim = anim
+        if anim == "stand" then
+            self.object:set_animation({x=0, y=79}, 30, 0)
+        elseif anim == "walk" then
+            self.object:set_animation({x=168, y=187}, 30, 0)
+        end
+    end,
 
     on_activate = function(self, staticdata)
         if staticdata and staticdata ~= "" then
@@ -75,6 +86,7 @@ minetest.register_entity("npc_mod:npc", {
                 end
             end
         end
+        self:set_anim("stand")
     end,
 
     get_staticdata = function(self)
@@ -87,8 +99,20 @@ minetest.register_entity("npc_mod:npc", {
     end,
 
     on_step = function(self, dtime)
-        if not self.program or #self.program == 0 then return end
+        if self.moving then
+            -- Smooth movement handling
+            self.moving.timer = self.moving.timer + dtime
+            if self.moving.timer >= self.moving.duration then
+                self.object:set_velocity({x=0,y=0,z=0})
+                self.object:set_pos(self.moving.target)
+                self:set_anim("stand")
+                self.moving = nil
+                self.program_index = self.program_index + 1
+            end
+            return
+        end
 
+        if not self.program or #self.program == 0 then return end
         self.timer = self.timer + dtime
         local step = self.program[self.program_index]
         if not step then return end
@@ -98,6 +122,7 @@ minetest.register_entity("npc_mod:npc", {
                 local dir = self.object:get_yaw()
                 local vel = vector.new(math.cos(dir), 0, math.sin(dir))
                 self.object:set_velocity(vector.multiply(vel, step.speed or 2))
+                self:set_anim("walk")
 
             elseif step.action == "turn_left" then
                 self.object:set_yaw(self.object:get_yaw() + math.rad(90))
@@ -107,29 +132,53 @@ minetest.register_entity("npc_mod:npc", {
 
             elseif step.action == "stop" then
                 self.object:set_velocity({x=0, y=0, z=0})
+                self:set_anim("stand")
 
             elseif step.action == "texture" then
                 self.object:set_properties({textures = {step.name}})
 
-            elseif step.action == "move_forward" then
-                local dir = self.object:get_yaw()
-                try_move(self.object, {x=math.cos(dir), y=0, z=math.sin(dir)})
+            elseif step.action == "chat" then
+                minetest.chat_send_all("[NPC-"..(self.npc_id or "?").."] " .. step.msg)
 
-            elseif step.action == "move_back" then
+            -- Smooth step movements
+            elseif step.action:find("move_") then
                 local dir = self.object:get_yaw()
-                try_move(self.object, {x=-math.cos(dir), y=0, z=-math.sin(dir)})
+                local pos = vector.round(self.object:get_pos())
+                local target
 
-            elseif step.action == "move_left" then
-                local dir = self.object:get_yaw()
-                try_move(self.object, {x=math.cos(dir + math.pi/2), y=0, z=math.sin(dir + math.pi/2)})
+                if step.action == "move_forward" then
+                    target = vector.add(pos, {x=math.cos(dir), y=0, z=math.sin(dir)})
+                elseif step.action == "move_back" then
+                    target = vector.add(pos, {x=-math.cos(dir), y=0, z=-math.sin(dir)})
+                elseif step.action == "move_left" then
+                    target = vector.add(pos, {x=math.cos(dir + math.pi/2), y=0, z=math.sin(dir + math.pi/2)})
+                elseif step.action == "move_right" then
+                    target = vector.add(pos, {x=math.cos(dir - math.pi/2), y=0, z=math.sin(dir - math.pi/2)})
+                elseif step.action == "move_up" then
+                    target = vector.add(pos, {x=0, y=1, z=0})
+                elseif step.action == "move_down" then
+                    target = vector.add(pos, {x=0, y=-1, z=0})
+                end
 
-            elseif step.action == "move_right" then
-                local dir = self.object:get_yaw()
-                try_move(self.object, {x=math.cos(dir - math.pi/2), y=0, z=math.sin(dir - math.pi/2)})
+                if target and can_stand_at(target) then
+                    local vel = vector.direction(pos, target)
+                    self.moving = {
+                        target = target,
+                        duration = 0.5,
+                        timer = 0,
+                    }
+                    self.object:set_velocity(vector.multiply(vel, 2))
+                    self:set_anim("walk")
+                else
+                    -- Blocked, skip
+                    self.program_index = self.program_index + 1
+                end
             end
 
             self.timer = 0
-            self.program_index = self.program_index + 1
+            if not self.moving then
+                self.program_index = self.program_index + 1
+            end
             if self.program_index > #self.program then
                 self.program_index = 1
             end
@@ -195,6 +244,8 @@ minetest.register_chatcommand("npc_edit", {
                     program_text = program_text .. "forward " .. (step.speed or 2) .. " " .. (step.duration or 2) .. "\n"
                 elseif step.action == "stop" then
                     program_text = program_text .. "stop " .. (step.duration or 2) .. "\n"
+                elseif step.action == "chat" then
+                    program_text = program_text .. "chat \""..step.msg.."\"\n"
                 else
                     program_text = program_text .. step.action .. "\n"
                 end
@@ -233,14 +284,14 @@ minetest.register_on_player_receive_fields(function(player, formname, fields)
                     table.insert(program, {action="stop", duration=tonumber(args[2]) or 2})
                 elseif cmd == "texture" then
                     table.insert(program, {action="texture", name=args[2]})
-                elseif cmd == "move_forward" then
-                    table.insert(program, {action="move_forward", duration=1})
-                elseif cmd == "move_back" then
-                    table.insert(program, {action="move_back", duration=1})
-                elseif cmd == "move_left" then
-                    table.insert(program, {action="move_left", duration=1})
-                elseif cmd == "move_right" then
-                    table.insert(program, {action="move_right", duration=1})
+                elseif cmd == "chat" then
+                    local msg = line:match("chat%s+\"(.-)\"")
+                    if msg then
+                        table.insert(program, {action="chat", msg=msg, duration=1})
+                    end
+                elseif cmd == "move_forward" or cmd == "move_back" or cmd == "move_left" or cmd == "move_right"
+                    or cmd == "move_up" or cmd == "move_down" then
+                    table.insert(program, {action=cmd, duration=1})
                 end
             end
             npc.program = program
