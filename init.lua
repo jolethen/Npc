@@ -4,17 +4,19 @@ local npc_list = {}
 local npc_counter = 0
 local player_editing = {}
 
--- =========================
--- ID generator
--- =========================
+-- ========== Priv ==========
+minetest.register_privilege("npc", {
+    description = "Can control and program NPCs",
+    give_to_singleplayer = true,
+})
+
+-- ========== ID ==========
 local function generate_id()
     npc_counter = npc_counter + 1
     return "npc" .. npc_counter
 end
 
--- =========================
--- Safe position check
--- =========================
+-- ========== Safety ==========
 local function can_stand_at(pos)
     local node = minetest.get_node_or_nil(pos)
     if not node then return false end
@@ -23,29 +25,7 @@ local function can_stand_at(pos)
     return true
 end
 
--- =========================
--- Command reference
--- =========================
-local command_help = {
-    forward      = "Move forward continuously. Usage: forward <speed> <duration>",
-    turn_left    = "Turn left (90°). Usage: turn_left",
-    turn_right   = "Turn right (90°). Usage: turn_right",
-    stop         = "Stop moving. Usage: stop <duration>",
-    texture      = "Change texture. Usage: texture <filename.png>",
-    chat         = "Send a chat message. Usage: chat \"message\"",
-    move_forward = "Step forward one block",
-    move_back    = "Step back one block",
-    move_left    = "Step left one block",
-    move_right   = "Step right one block",
-    move_up      = "Step up one block",
-    move_down    = "Step down one block",
-    reset        = "Return to spawn position. Usage: reset",
-    loop         = "Repeat program. Usage: loop <times>",
-}
-
--- =========================
--- NPC entity
--- =========================
+-- ========== NPC ENTITY ==========
 minetest.register_entity("npc_mod:npc", {
     initial_properties = {
         hp_max = 20,
@@ -60,13 +40,12 @@ minetest.register_entity("npc_mod:npc", {
     npc_id = nil,
     program = {},
     program_index = 1,
-    timer = 0,
-    moving = nil,
-    anim = "stand",
     spawn_pos = nil,
     loop_count = 0,
     current_loop = 0,
     resetting = false,
+    moving = nil,
+    anim = "stand",
 
     set_anim = function(self, anim)
         if self.anim == anim then return end
@@ -105,14 +84,14 @@ minetest.register_entity("npc_mod:npc", {
             program_index = self.program_index,
             texture = self.object:get_properties().textures[1],
             loop_count = self.loop_count,
-            current_loop = self.current_loop
+            current_loop = self.current_loop,
         })
     end,
 
     on_step = function(self, dtime)
         if not self.program then self.program = {} end
 
-        -- Reset
+        -- Reset behavior
         if self.resetting and self.spawn_pos then
             local pos = self.object:get_pos()
             local target = self.spawn_pos
@@ -132,7 +111,7 @@ minetest.register_entity("npc_mod:npc", {
             end
         end
 
-        -- Smooth movement
+        -- Smooth move
         if self.moving then
             self.moving.timer = self.moving.timer + dtime
             if self.moving.timer >= self.moving.duration then
@@ -145,166 +124,158 @@ minetest.register_entity("npc_mod:npc", {
             return
         end
 
+        -- Execute program
         if #self.program == 0 then return end
-        self.timer = self.timer + dtime
-        local step = self.program[self.program_index]
-        if not step then return end
+        local cmd = self.program[self.program_index]
+        if not cmd then return end
 
-        if self.timer >= (step.duration or 1) then
-            if step.action == "forward" then
-                local dir = self.object:get_yaw()
-                local vel = vector.new(math.cos(dir), 0, math.sin(dir))
-                self.object:set_velocity(vector.multiply(vel, step.speed or 2))
+        if cmd == "forward" or cmd == "back" or cmd == "left" or cmd == "right" then
+            local dir = {x=0,y=0,z=0}
+            local pos = vector.round(self.object:get_pos())
+            if cmd == "forward" then dir = {x=0,z=1,y=0}
+            elseif cmd == "back" then dir = {x=0,z=-1,y=0}
+            elseif cmd == "left" then dir = {x=1,z=0,y=0}
+            elseif cmd == "right" then dir = {x=-1,z=0,y=0} end
+            local target = vector.add(pos, dir)
+            if can_stand_at(target) then
+                self.object:set_velocity(vector.multiply(dir, 2))
+                self.moving = {target=target, timer=0, duration=0.5}
                 self:set_anim("walk")
-
-            elseif step.action == "turn_left" then
-                self.object:set_yaw(self.object:get_yaw() + math.rad(90))
-
-            elseif step.action == "turn_right" then
-                self.object:set_yaw(self.object:get_yaw() - math.rad(90))
-
-            elseif step.action == "stop" then
-                self.object:set_velocity({x=0,y=0,z=0})
-                self:set_anim("stand")
-
-            elseif step.action == "texture" then
-                self.object:set_properties({textures = {step.name}})
-
-            elseif step.action == "chat" then
-                minetest.chat_send_all("[NPC-"..(self.npc_id or "?").."] " .. step.msg)
-
-            elseif step.action == "reset" then
-                self.resetting = true
-                self.timer = 0
-                return
-
-            elseif step.action == "loop" then
-                self.loop_count = tonumber(step.times) or 0
-                self.current_loop = self.current_loop + 1
-                if self.loop_count == 0 or self.current_loop < self.loop_count then
-                    self.program_index = 1
-                end
-
-            -- Step movement
-            elseif step.action:find("move_") then
-                local dir = self.object:get_yaw()
-                local pos = vector.round(self.object:get_pos())
-                local target
-                if step.action == "move_forward" then
-                    target = vector.add(pos, {x=math.cos(dir), y=0, z=math.sin(dir)})
-                elseif step.action == "move_back" then
-                    target = vector.add(pos, {x=-math.cos(dir), y=0, z=-math.sin(dir)})
-                elseif step.action == "move_left" then
-                    target = vector.add(pos, {x=math.cos(dir + math.pi/2), y=0, z=math.sin(dir + math.pi/2)})
-                elseif step.action == "move_right" then
-                    target = vector.add(pos, {x=math.cos(dir - math.pi/2), y=0, z=math.sin(dir - math.pi/2)})
-                elseif step.action == "move_up" then
-                    target = vector.add(pos, {x=0, y=1, z=0})
-                elseif step.action == "move_down" then
-                    target = vector.add(pos, {x=0, y=-1, z=0})
-                end
-
-                if target and can_stand_at(target) then
-                    local vel = vector.direction(pos, target)
-                    self.moving = { target=target, duration=0.5, timer=0 }
-                    self.object:set_velocity(vector.multiply(vel, 2))
-                    self:set_anim("walk")
-                else
-                    self.program_index = self.program_index + 1
-                end
-            end
-
-            self.timer = 0
-            if not self.moving and not self.resetting then
+            else
                 self.program_index = self.program_index + 1
             end
-            if self.program_index > #self.program then
-                if self.loop_count == 0 or self.current_loop < self.loop_count then
-                    self.program_index = 1
-                else
-                    self.program_index = #self.program
-                end
+        elseif cmd:sub(1,3) == "say" then
+            minetest.chat_send_all("<NPC "..self.npc_id.."> "..cmd:sub(5))
+            self.program_index = self.program_index + 1
+        elseif cmd:sub(1,7) == "texture" then
+            local tex = cmd:sub(9)
+            self.object:set_properties({textures = {tex}})
+            self.program_index = self.program_index + 1
+        elseif cmd == "reset" then
+            self.resetting = true
+        elseif cmd:sub(1,4) == "loop" then
+            local times = tonumber(cmd:sub(6)) or 1
+            if self.current_loop < times then
+                self.program_index = 1
+                self.current_loop = self.current_loop + 1
+            else
+                self.program_index = self.program_index + 1
+                self.current_loop = 0
             end
+        else
+            self.program_index = self.program_index + 1
         end
     end,
 })
 
--- =========================
--- Chat commands
--- =========================
+-- ========== FORMS ==========
+local function get_formspec(npc)
+    local program_str = table.concat(npc.program, "\n")
+    return "size[8,9]" ..
+           "textarea[0.5,0.5;7.5,6;program;Program;" .. minetest.formspec_escape(program_str) .. "]" ..
+           "button_exit[0.5,7;2,1;save;Save]" ..
+           "button[3,7;2,1;help;Help]" ..
+           "button[5.5,7;2,1;reset_prog;Reset Program]" ..
+           "button_exit[3,8;2,1;close;Close]"
+end
+
+minetest.register_on_player_receive_fields(function(player, formname, fields)
+    if formname ~= "npc_mod:editor" then return end
+    local name = player:get_player_name()
+    local npc_id = player_editing[name]
+    if not npc_id then return end
+    local npc = npc_list[npc_id]
+    if not npc or not npc:get_luaentity() then return end
+    local ent = npc:get_luaentity()
+
+    if fields.save and fields.program then
+        ent.program = {}
+        for line in fields.program:gmatch("[^\r\n]+") do
+            table.insert(ent.program, line)
+        end
+        ent.program_index = 1
+        ent.current_loop = 0
+        minetest.chat_send_player(name, "[NPC] Program saved for " .. npc_id)
+    elseif fields.help then
+        minetest.show_formspec(name, "npc_mod:editor",
+            "size[8,9]textarea[0.5,0.5;7.5,7;help;Commands;" ..
+            "forward, back, left, right\nsay <msg>\ntexture <skin.png>\nreset\nloop <times>" .. "]" ..
+            "button_exit[3,8;2,1;close;Close]")
+    elseif fields.reset_prog then
+        ent.program = {}
+        ent.program_index = 1
+        ent.current_loop = 0
+        minetest.chat_send_player(name, "[NPC] Program reset for " .. npc_id)
+    end
+end)
+
+-- ========== CHAT COMMANDS ==========
 minetest.register_chatcommand("spawn_npc", {
-    description = "Spawn a programmable NPC",
+    privs = {npc=true},
     func = function(name)
         local player = minetest.get_player_by_name(name)
         if not player then return end
-        local pos = vector.add(player:get_pos(), {x=0, y=1, z=0})
+        local pos = vector.add(player:get_pos(), {x=2,y=0,z=0})
         local obj = minetest.add_entity(pos, "npc_mod:npc")
-        local lua = obj:get_luaentity()
-        local id = generate_id()
-        lua.npc_id = id
-        lua.spawn_pos = pos
-        npc_list[id] = lua
-        minetest.chat_send_player(name, "Spawned NPC with ID: " .. id)
+        local ent = obj:get_luaentity()
+        ent.npc_id = generate_id()
+        npc_list[ent.npc_id] = obj
+        minetest.chat_send_player(name, "[NPC] Spawned NPC with ID " .. ent.npc_id)
+    end,
+})
+
+minetest.register_chatcommand("npc_edit", {
+    params = "<id>",
+    privs = {npc=true},
+    func = function(name, param)
+        local obj = npc_list[param]
+        if not obj or not obj:get_luaentity() then
+            return false, "No NPC with ID " .. param
+        end
+        player_editing[name] = param
+        minetest.show_formspec(name, "npc_mod:editor", get_formspec(obj:get_luaentity()))
     end,
 })
 
 minetest.register_chatcommand("npc_reset", {
     params = "<id>",
-    description = "Reset an NPC to its spawn position",
+    privs = {npc=true},
     func = function(name, param)
-        local npc = npc_list[param]
-        if npc then
-            npc.resetting = true
-            minetest.chat_send_player(name, "NPC " .. param .. " reset.")
-        else
-            return false, "No NPC with that ID."
+        local obj = npc_list[param]
+        if obj and obj:get_luaentity() then
+            obj:get_luaentity().resetting = true
+            return true, "[NPC] Resetting " .. param
         end
+        return false, "No NPC with ID " .. param
     end,
 })
 
 minetest.register_chatcommand("npc_loop", {
     params = "<id> <times>",
-    description = "Loop an NPC's program",
+    privs = {npc=true},
     func = function(name, param)
         local id, times = param:match("^(%S+)%s+(%d+)$")
-        if not id then return false, "Usage: /npc_loop <id> <times>" end
-        local npc = npc_list[id]
-        if npc then
-            npc.loop_count = tonumber(times)
-            npc.current_loop = 0
-            npc.program_index = 1
-            minetest.chat_send_player(name, "NPC " .. id .. " will loop " .. times .. " times.")
-        else
-            return false, "No NPC with that ID."
+        if not id or not times then return false, "Usage: /npc_loop <id> <times>" end
+        local obj = npc_list[id]
+        if obj and obj:get_luaentity() then
+            obj:get_luaentity().loop_count = tonumber(times)
+            return true, "[NPC] Looping program of " .. id .. " for " .. times .. " times"
         end
+        return false, "No NPC with ID " .. id
     end,
 })
 
 minetest.register_chatcommand("npc_setskin", {
-    params = "<id> <skin.png>",
-    description = "Set NPC skin",
+    params = "<id> <texture.png>",
+    privs = {npc=true},
     func = function(name, param)
-        local id, skin = param:match("^(%S+)%s+(%S+)$")
-        if not id or not skin then
-            return false, "Usage: /npc_setskin <id> <skin.png>"
+        local id, tex = param:match("^(%S+)%s+(%S+)$")
+        if not id or not tex then return false, "Usage: /npc_setskin <id> <texture.png>" end
+        local obj = npc_list[id]
+        if obj and obj:get_luaentity() then
+            obj:set_properties({textures={tex}})
+            return true, "[NPC] Set skin of " .. id .. " to " .. tex
         end
-        local npc = npc_list[id]
-        if npc then
-            npc.object:set_properties({textures = {skin}})
-            minetest.chat_send_player(name, "NPC " .. id .. " skin set to " .. skin)
-        else
-            return false, "No NPC with that ID."
-        end
-    end,
-})
-
-minetest.register_chatcommand("npc_help", {
-    description = "Show NPC programming commands",
-    func = function(name)
-        local text = "__ NPC Commands __\n"
-        for cmd, desc in pairs(command_help) do
-            text = text .. cmd .. " - " .. desc .. "\n"
-        end
-        minetest.chat_send_player(name, text)
+        return false, "No NPC with ID " .. id
     end,
 })
